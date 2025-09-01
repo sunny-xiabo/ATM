@@ -1,0 +1,51 @@
+{
+    "name": "API测试模板",
+    "description": "用于REST API接口测试的标准模板",
+    "version": "1.0",
+    "custom_fields": [
+        "API路径",
+        "请求方法",
+        "请求头",
+        "请求参数",
+        "响应码",
+        "响应时间"
+    ],
+    "column_widths": {
+        "ID": 10,
+        "Title": 50,
+        "Description": 100,
+        "API路径": 60,
+        "请求方法": 20,
+        "请求头": 80,
+        "请求参数": 100,
+        "响应码": 15,
+        "响应时间": 20,
+        "Preconditions": 80,
+        "Steps": 120,
+        "Expected Results": 120,
+        "Priority": 15,
+        "Category": 20
+    },
+    "conditional_formatting": [
+        {
+            "column": "响应码",
+            "condition": "^5\\d{2}$",
+            "format": "red"
+        },
+        {
+            "column": "响应码",
+            "condition": "^4\\d{2}$",
+            "format": "yellow"
+        },
+        {
+            "column": "响应时间",
+            "condition": ">1000",
+            "format": "orange"
+        },
+        {
+            "column": "Priority",
+            "condition": "High",
+            "format": "bold_red"
+        }
+    ]
+}

@@ -1,0 +1,44 @@
+{
+  "test_scenarios": [
+    {
+      "id": "FUNC-001",
+      "description": "文件格式验证测试",
+      "parameters": {
+        "supported_formats": ["pdf", "jpg", "png"],
+        "max_batch_size": 50,
+        "invalid_formats": ["exe", "bat"]
+      }
+    },
+    {
+      "id": "AI-001",
+      "description": "资质内容提取准确性验证",
+      "validation_criteria": {
+        "accuracy_threshold": 0.98,
+        "allowed_formats": ["营业执照", "身份证"]
+      }
+    },
+    {
+      "id": "TRACE-001",
+      "description": "溯源功能响应验证",
+      "performance_requirements": {
+        "max_response_time": 2,
+        "concurrent_users": 100
+      }
+    }
+  ],
+
+  "common_parameters": {
+     "test_environment": {
+      "browser": "Chrome 120+",
+      "resolution": "1920x1080"
+    },
+    "data_requirements": {
+      "sample_size": 1000,
+      "data_distribution": {
+        "pdf": 40,
+        "jpg": 35,
+        "png": 25
+      }
+    }
+  }
+}
