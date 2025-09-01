@@ -219,6 +219,14 @@ test_cases/
 !pyproject.toml
 !uv.lock
 
+# Keep docs directory structure but filter large files
+!docs/
+docs/*.pdf
+docs/*.doc
+docs/*.docx
+docs/*.zip
+docs/*.tar.gz
+
 # Temporary files
 *.tmp
 *.temp
