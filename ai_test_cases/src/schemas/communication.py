@@ -6,7 +6,7 @@
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 
 
 class AgentMessage(BaseModel):

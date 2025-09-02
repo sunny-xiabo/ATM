@@ -7,7 +7,6 @@
 from typing import List, Dict
 from dataclasses import dataclass, field
 
-
 @dataclass
 class Template:
     """
@@ -75,8 +74,6 @@ class Template:
         """
         if self._validate_formatting_rule(rule):
             self.conditional_formatting.append(rule)
-        else:
-            raise ValueError("无效的条件格式化规则")
 
     def _validate_formatting_rule(self, rule: Dict) -> bool:
         """

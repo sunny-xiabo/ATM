@@ -7,13 +7,13 @@
 
 import logging
 import os
-import re
+import concurrent.futures
 from typing import Dict, List
 
 import autogen
 from dotenv import load_dotenv
 from src.utils.agent_io import AgentIO
-from src.schemas.communication import TestScenario
+from src.utils.json_parser import UnifiedJSONParser
 
 load_dotenv()  # 加载环境变量
 logger = logging.getLogger(__name__)  # 获取日志记录器
@@ -43,6 +43,9 @@ class QualityAssuranceAgent:
         # 初始化AgentIO用于保存和加载审查结果
         self.agent_io = AgentIO()
 
+        # 初始化统一的JSON解析器
+        self.json_parser = UnifiedJSONParser()
+
         # 初始化agent
         self.agent = autogen.AssistantAgent(
             name="quality_assurance",
@@ -64,7 +67,9 @@ class QualityAssuranceAgent:
             1. 必须严格按照上述JSON格式返回审查结果
             2. 每个类别至少包含一条具体的改进建议
             3. 所有建议必须清晰、具体、可执行
-            4. 不要返回任何JSON格式之外的文本内容""",
+            4. 不要返回任何JSON格式之外的文本内容
+            5. 返回的内容必须是中文回复，不要英文回复
+            6. review_comments等键名必须按照json里的格式返回，如"review_comments": {"completeness": ["完整性相关的改进建议1", "完整性相关的改进建议2"]}这种""",
             llm_config={"config_list": self.config_list}
         )
 
@@ -251,24 +256,22 @@ class QualityAssuranceAgent:
             "error_scenarios": []
         }
 
-        if not feedback:
+        if not feedback or not isinstance(feedback, str):
+            logger.warning("反馈内容为空或格式不正确，返回默认审查意见")
             return review_comments
 
-        # 尝试解析JSON格式的反馈
-        import json
-        import re
-
         try:
-            # 查找JSON内容
-            json_match = re.search(r'\{[\s\S]*\}', feedback)
-            if json_match:
-                json_str = json_match.group(0)
-                # 解析JSON
-                parsed_feedback = json.loads(json_str)
+            # 使用统一的JSON解析器
+            parsed_feedback = self.json_parser.parse(feedback, "quality_assurance_review")
 
-                # 提取review_comments部分
-                if 'review_comments' in parsed_feedback:
-                    return parsed_feedback['review_comments']
+            if parsed_feedback and 'review_comments' in parsed_feedback:
+                extracted_comments = parsed_feedback['review_comments']
+                if isinstance(extracted_comments, dict):
+                    # 合并提取的评论到默认结构中
+                    for key in review_comments:
+                        if key in extracted_comments and isinstance(extracted_comments[key], list):
+                            review_comments[key] = extracted_comments[key]
+                    return review_comments
         except Exception as e:
             logger.warning(f"JSON解析失败，将使用文本解析方式: {str(e)}")
 
@@ -342,7 +345,6 @@ class QualityAssuranceAgent:
 
         # 使用线程池并发处理测试用例
         all_reviewed_cases = []
-        import concurrent.futures
 
         # 定义批处理函数
         def process_batch(batch_index, batch_cases):

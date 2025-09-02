@@ -4,13 +4,15 @@
 # @File: export_service.py
 # @Date: 2025/8/27 11:41
 """
+import re
+
 import logging
 from pathlib import Path
 from typing import List
 import pandas as pd
 import os
 from ..models.template import Template
-from ..models.test_case import TestCase
+
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,44 @@ class ExportService:
     def __init__(self):
         self.supported_formats = ['.xlsx']
         self.max_file_size_mb = 50  # 最大文件大小限制(MB)
+
+    def _clean_text_data(self, text: str) -> str:
+        """清理文本数据，移除emoji、null字节和其他特殊字符"""
+        if not isinstance(text, str):
+            return str(text) if text is not None else ""
+
+        # 移除null字节
+        text = text.replace('\x00', '')
+
+        # 移除emoji和其他特殊Unicode字符
+        # 保留基本的中文、英文、数字和常用标点符号
+        text = re.sub(
+            r'[^\u4e00-\u9fa5a-zA-Z0-9\s\.,!?;:()\[\]{}\-_+=<>/"\'\\|@#$%^&*~`，。！？；：（）【】｛｝—＋＝＜＞／""''＼｜＠＃＄％＾＆＊～｀\n\r\t]',
+            '', text)
+
+        # 移除多余的空白字符
+        text = re.sub(r'\s+', ' ', text)
+
+        # 移除开头和结尾的空白
+        text = text.strip()
+
+        return text
+
+    def _clean_list_data(self, data_list: List) -> List:
+        """清理列表数据"""
+        if not isinstance(data_list, list):
+            return []
+
+        cleaned_list = []
+        for item in data_list:
+            if isinstance(item, str):
+                cleaned_item = self._clean_text_data(item)
+                if cleaned_item:  # 只添加非空项
+                    cleaned_list.append(cleaned_item)
+            else:
+                cleaned_list.append(str(item))
+
+        return cleaned_list
 
     async def export_to_excel(self,
                               test_cases: List,

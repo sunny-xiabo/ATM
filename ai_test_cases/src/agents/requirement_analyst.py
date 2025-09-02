@@ -15,6 +15,7 @@ import autogen
 from dotenv import load_dotenv
 from src.utils.agent_io import AgentIO
 from src.schemas.communication import TestScenario
+from src.utils.json_parser import UnifiedJSONParser
 
 load_dotenv()  # 加载环境变量
 logger = logging.getLogger(__name__)  # 获取日志记录器
@@ -37,6 +38,9 @@ class RequirementAnalystAgent:
 
         # 初始化AgentIO用于保存和加载分析结果
         self.agent_io = AgentIO()
+
+        # 初始化统一的JSON解析器
+        self.json_parser = UnifiedJSONParser()
 
         self.agent = autogen.AssistantAgent(
             name="requirement_analyst",
@@ -87,6 +91,12 @@ class RequirementAnalystAgent:
                 3. 所有文本必须使用双引号
                 4. JSON 必须是有效的且可解析的
                 5. 每个测试场景必须包含所有必需字段（id、description、test_cases）
+                6. 返回的内容必须是中文回复，不要英文回复
+                7. id等键名必须按照json里的格式返回，如"id": "TC001-修改密码为空"这种
+                8. 请仔细阅读需求文档，提取出所有功能需求、非功能需求、测试场景、风险领域，不要遗漏，并明确每个需求和功能下的具体规则
+                9. 并把分析出的功能规则，分配到每一条测试用例中，并把对应的规则添加到description测试用例描述中
+                10. 每个需求和功能下（）括号内的内容也应该仔细分析，并添加到description测试用例描述中
+                11. 分析完需求后也要再核对以下需求文档，看是否有遗漏的功能点，如有，需补充完整
             ''',
             llm_config={"config_list": self.config_list},
         )
@@ -167,63 +177,17 @@ class RequirementAnalystAgent:
 
                 # 导入TestScenario类
                 from src.schemas.communication import TestScenario
-                import json
-                import re
 
-                # 尝试从响应中提取JSON部分
-                json_match = re.search(r'```(?:json)?\s*({\s*".*?})\s*```', response_str, re.DOTALL)
-                if not json_match:
-                    # 尝试直接从响应中查找JSON对象
-                    json_match = re.search(r'({[\s\S]*"functional_requirements"[\s\S]*})', response_str)
+                # 使用统一的JSON解析器
+                structured_result = self.json_parser.parse(response_str, "requirement_analysis")
 
-                structured_result = None
-                if json_match:
-                    try:
-                        # 提取JSON字符串并解析
-                        json_str = json_match.group(1)
-                        # 清理可能的格式问题
-                        json_str = json_str.strip()
-                        json_str = re.sub(r'```json|```', '', json_str)
-
-                        # 解析JSON
-                        parsed_result = json.loads(json_str)
-
-                        # 验证解析结果是否包含所需字段
-                        if isinstance(parsed_result, dict):
-                            structured_result = {
-                                "functional_requirements": parsed_result.get("functional_requirements", []),
-                                "non_functional_requirements": parsed_result.get("non_functional_requirements", []),
-                                "risk_areas": parsed_result.get("risk_areas", [])
-                            }
-
-                            # 处理test_scenarios字段
-                            if "test_scenarios" in parsed_result and isinstance(parsed_result["test_scenarios"], list):
-                                test_scenarios = []
-                                for scenario in parsed_result["test_scenarios"]:
-                                    if isinstance(scenario, dict):
-                                        test_scenarios.append(TestScenario(
-                                            id=scenario.get("id", f"TS{len(test_scenarios) + 1:03d}"),
-                                            description=scenario.get("description", ""),
-                                            test_cases=scenario.get("test_cases", [])
-                                        ))
-                                structured_result["test_scenarios"] = test_scenarios
-                            else:
-                                structured_result["test_scenarios"] = [
-                                    TestScenario(
-                                        id="TS001",
-                                        description="需要提供具体的测试场景",
-                                        test_cases=[]
-                                    )
-                                ]
-
-                            logger.info("成功从JSON响应中提取分析结果")
-                    except Exception as e:
-                        logger.error(f"JSON解析错误: {str(e)}")
-                        structured_result = None
-
-                # 如果无法从响应中提取有效的JSON，尝试使用文本解析方法
-                if not structured_result:
+                if structured_result:
+                    # 构建结构化结果
+                    structured_result = self._build_structured_result(structured_result)
+                    logger.info("成功从JSON响应中提取分析结果")
+                else:
                     logger.warning("无法从响应中提取有效的JSON，尝试使用文本解析方法")
+                    # 使用文本解析方法作为备用方案
                     structured_result = {
                         "functional_requirements": self._extract_functional_reqs(response_str),
                         "non_functional_requirements": self._extract_non_functional_reqs(response_str),
@@ -231,12 +195,12 @@ class RequirementAnalystAgent:
                         "risk_areas": self._extract_risk_areas(response_str)
                     }
 
-                # 验证结果并填充缺失字段
+                    # 验证结果并填充缺失字段
                 if not self._validate_analysis_result(structured_result):
                     logger.warning("分析结果验证失败，填充缺失字段")
                     self._fill_missing_requirements(structured_result)
 
-                # 保存分析结果
+                    # 保存分析结果
                 self.agent_io.save_result('requirement_analyst', structured_result)
 
                 # 保存到last_analysis属性
@@ -569,3 +533,38 @@ class RequirementAnalystAgent:
         }
         self.last_analysis = default_result
         return default_result
+
+    def _get_current_timestamp(self) -> str:
+        """获取当前时间戳"""
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _build_structured_result(self, parsed_result: Dict) -> Dict:
+        """构建结构化的分析结果"""
+        structured_result = {
+            "functional_requirements": parsed_result.get("functional_requirements", []),
+            "non_functional_requirements": parsed_result.get("non_functional_requirements", []),
+            "risk_areas": parsed_result.get("risk_areas", [])
+        }
+
+        # 处理test_scenarios字段
+        if "test_scenarios" in parsed_result and isinstance(parsed_result["test_scenarios"], list):
+            test_scenarios = []
+            for scenario in parsed_result["test_scenarios"]:
+                if isinstance(scenario, dict):
+                    test_scenarios.append(TestScenario(
+                        id=scenario.get("id", f"TS{len(test_scenarios) + 1:03d}"),
+                        description=scenario.get("description", ""),
+                        test_cases=scenario.get("test_cases", [])
+                    ))
+            structured_result["test_scenarios"] = test_scenarios
+        else:
+            structured_result["test_scenarios"] = [
+                TestScenario(
+                    id="TS001",
+                    description="需要提供具体的测试场景",
+                    test_cases=[]
+                )
+            ]
+
+        return structured_result

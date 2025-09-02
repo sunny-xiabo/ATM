@@ -10,7 +10,6 @@ from PyPDF2 import PdfReader
 from docx import Document
 import markdown
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +36,7 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"处理{doc_path}文档时出错: {str(e)}")
             raise
+
     def _extract_content(self, file_path: Path) -> str:
         """
         从不同文件格式中提取文本内容
@@ -52,8 +52,7 @@ class DocumentProcessor:
         else:
             return self._extract_txt_content(file_path)
 
-
-    def _extract_pdf_content(self,file_path: Path) -> str:
+    def _extract_pdf_content(self, file_path: Path) -> str:
         """
 
         :param file_path:
@@ -90,7 +89,6 @@ class DocumentProcessor:
         """
         with open(file_path, 'r', encoding='utf-8') as file:
             return file.read()
-
 
     def _preprocess_content(self, content: str) -> str:
         """

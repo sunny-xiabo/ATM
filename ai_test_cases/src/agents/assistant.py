@@ -13,12 +13,13 @@ from typing import Dict, List
 
 import autogen
 from dotenv import load_dotenv
-from src.utils.agent_io import AgentIO
-from src.schemas.communication import TestScenario,TestCase
+
+from src.schemas.communication import TestCase
 from .requirement_analyst import RequirementAnalystAgent
 from .test_designer import TestDesignerAgent
 from .test_case_writer import TestCaseWriterAgent
 from .quality_assurance import QualityAssuranceAgent
+from src.utils.json_parser import UnifiedJSONParser
 
 
 
@@ -48,6 +49,8 @@ class AssistantAgent:
         )
 
         self.agents = agents
+        # 初始化统一的JSON解析器
+        self.json_parse = UnifiedJSONParser()
 
     async def coordinate_workflow(self, task: dict) -> dict:
         """协调不同代理之间的工作流程。"""
@@ -450,12 +453,44 @@ class AssistantAgent:
 
                 # 尝试从响应中提取JSON数据
                 if isinstance(result, str):
-                    # 通过正则表达式匹配任意代码块（兼容 ```json 和纯 ```）
-                    cleaned = re.sub(r'^```(?:json)?\s*|\s*```$', '', result, flags=re.MULTILINE)
-
-                    # 二次清理首尾空白
-                    cleaned = cleaned.strip()
-                    result = json.loads(cleaned)
+                    try:
+                        # 使用统一的JSON解析器直接解析
+                        result = self.json_parser.parse(result, "test_design")
+                        if not result:
+                            logger.error("无法解析测试设计结果，使用默认值")
+                            result = {
+                                "test_approach": {
+                                    "methodology": [],
+                                    "tools": [],
+                                    "frameworks": []
+                                },
+                                "coverage_matrix": [],
+                                "priorities": [],
+                                "resource_estimation": {
+                                    "time": None,
+                                    "personnel": None,
+                                    "tools": [],
+                                    "additional_resources": []
+                                }
+                            }
+                    except Exception as e:
+                        logger.error(f"JSON解析错误: {str(e)}")
+                        logger.error("无法解析测试设计结果，使用默认值")
+                        result = {
+                            "test_approach": {
+                                "methodology": [],
+                                "tools": [],
+                                "frameworks": []
+                            },
+                            "coverage_matrix": [],
+                            "priorities": [],
+                            "resource_estimation": {
+                                "time": None,
+                                "personnel": None,
+                                "tools": [],
+                                "additional_resources": []
+                            }
+                        }
 
                 # 验证响应消息格式
                 response = TestDesignResponse(**result)

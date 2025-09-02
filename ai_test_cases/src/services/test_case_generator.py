@@ -7,47 +7,44 @@
 
 import json
 from typing import List, Dict, Any, Optional
-
 from src.models.test_case import TestCase
 from datetime import datetime
 from src.schemas.communication import TestScenario
 
 
 class TestCaseGenerator:
-
     def __init__(self, template_path: Optional[str] = None):
         self.template_path = template_path
         self.base_template = self._load_template() if template_path else {}
 
-    def _load_template(self) -> Dict[str, Any]:
-        """
-        加载测试用例模板
-        :return:
-        """
+    def _load_template(self) -> Dict:
+        """加载测试用例模板配置"""
         if self.template_path is None:
             return {}
         try:
             with open(file=self.template_path, mode='r', encoding='utf-8') as f:
                 return json.load(f)
-        except Exception as e:
-            logger.error(f"加载测试用例模板时出错: {str(e)}")
+        except FileNotFoundError:
             return {}
 
     def generate_test_cases(self, test_strategy: Dict[str, Any]) -> List[TestCase]:
-        """
-        根据测试策略生成测试用例
-        :param test_strategy: test_strategy: 包含测试策略的字典，应包含以下字段
-                                - scenarios: 测试场景列表
-                                - test_types: 测试类型配置
-                                - priorities: 测试优先级
-                                - validations: 验证规则
-        :return: List[TestCase]: 生成的测试用例
+        """基于测试策略生成测试用例
+
+        Args:
+            test_strategy: 包含测试策略的字典，应包含以下字段：
+                - scenarios: 测试场景列表
+                - test_types: 测试类型配置
+                - priorities: 优先级定义
+                - validation_rules: 验证规则
+
+        Returns:
+            List[TestCase]: 生成的测试用例列表
         """
         test_cases = []
         scenarios = test_strategy.get('scenarios', [])
         test_types = test_strategy.get('test_types', {})
         priorities = test_strategy.get('priorities', {})
-        vaidations = test_strategy.get('validation_rules', {})
+        validation_rules = test_strategy.get('validation_rules', {})
 
         for scenario in scenarios:
             # 根据场景类型生成对应的测试用例
@@ -57,10 +54,11 @@ class TestCaseGenerator:
                     scenario=scenario,
                     test_type=test_types[scenario_type],
                     priorities=priorities,
-                    validation_rules=vaidation_rules
+                    validation_rules=validation_rules
                 )
                 if test_case:
                     test_cases.append(test_case)
+
         return test_cases
 
     def _create_test_case(self,
@@ -68,16 +66,19 @@ class TestCaseGenerator:
                           test_type: Dict[str, Any],
                           priorities: Dict[str, Any],
                           validation_rules: Dict[str, Any]) -> Optional[TestCase]:
-        """
-        创建单个测试用例
-        :param scenario: 测试场景信息
-        :param test_type: 测试类型配置
-        :param priorities: 优先级定义
-        :param validation_rules: 验证规则
-        :return: Optional[TestCase]: 生成的测试用例，如果生成失败则返回None
+        """创建单个测试用例
+
+        Args:
+            scenario: 测试场景信息
+            test_type: 测试类型配置
+            priorities: 优先级定义
+            validation_rules: 验证规则
+
+        Returns:
+            Optional[TestCase]: 生成的测试用例，如果生成失败则返回None
         """
         try:
-            # 获取用例基本信息
+            # 获取测试用例基本信息
             title = f"{test_type.get('name', '')} - {scenario.get('description', '')}"
             priority = self._determine_priority(scenario, priorities)
             category = test_type.get('category', '功能测试')
@@ -102,32 +103,18 @@ class TestCaseGenerator:
 
             return test_case
         except Exception as e:
-            logger.error(f"创建测试用例时出错: {str(e)}")
+            print(f"创建测试用例失败: {str(e)}")
             return None
 
     def _determine_priority(self, scenario: Dict[str, Any], priorities: Dict[str, Any]) -> str:
-
-        """
-        根据场景和优先级定义确定测试用例优先级
-        :param scenario: 测试场景信息
-        :param priorities: 优先级定义
-        :return: str: 优先级名称
-        """
-
+        """根据场景和优先级定义确定测试用例优先级"""
         scenario_priority = scenario.get('priority')
         if scenario_priority in priorities:
             return priorities[scenario_priority].get('level', 'P2')
         return 'P2'
 
     def _generate_steps(self, test_type: Dict[str, Any], scenario: Dict[str, Any]) -> List[str]:
-
-        """
-        根据测试类型和测试场景生成测试步骤
-        :param test_type: 测试类型配置
-        :param scenario: 测试场景信息
-        :return: List[str]: 生成的测试步骤列表
-        """
-
+        """生成测试步骤"""
         base_steps = test_type.get('base_steps', [])
         scenario_steps = scenario.get('steps', [])
         return base_steps + scenario_steps
@@ -136,33 +123,21 @@ class TestCaseGenerator:
                                    test_type: Dict[str, Any],
                                    scenario: Dict[str, Any],
                                    validation_rules: Dict[str, Any]) -> List[str]:
-        """
-        根据测试类型和测试场景生成预期结果
-        :param test_type: 测试类型配置
-        :param scenario: 测试场景信息
-        :param validation_rules: 验证规则
-        :return: List[str]: 生成的预期结果列表
-        """
+        """生成预期结果"""
         base_results = test_type.get('base_expected_results', [])
         scenario_results = scenario.get('expected_results', [])
 
-        # 添加验证规则的预期结果
+        # 添加验证规则相关的预期结果
         if validation_rules:
-            rule_results = self._generate_validation_results(test_type, validation_rules)
-            return base_results + scenario_results + rules_results
+            rule_results = self._generate_validation_rule_results(test_type, validation_rules)
+            return base_results + scenario_results + rule_results
+
         return base_results + scenario_results
 
     def _generate_validation_rule_results(self,
                                           test_type: Dict[str, Any],
                                           validation_rules: Dict[str, Any]) -> List[str]:
-
-        """
-        根据测试类型和验证规则生成预期结果
-        :param self:
-        :param test_type:
-        :param validation_rules:
-        :return:
-        """
+        """根据验证规则生成预期结果"""
         results = []
         type_rules = validation_rules.get(test_type.get('name', ''), {})
 
@@ -170,21 +145,17 @@ class TestCaseGenerator:
             if isinstance(rule_value, dict):
                 threshold = rule_value.get('threshold')
                 if threshold is not None:
-                    results.append(f"验证规则 {rule_name} 的预期结果为 {threshold}")
-                else:
-                    results.append(f"验证规则 {rule_name} 的预期结果为 {rule_value}")
+                    results.append(f"{rule_name}应达到{threshold}")
+            elif isinstance(rule_value, (int, float)):
+                results.append(f"{rule_name}应达到{rule_value}")
+
         return results
 
     def _generate_test_data(self, test_type: Dict[str, Any], scenario: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        根据测试类型和测试场景生成测试数据
-        :param test_type:
-        :param scenario:
-        :return:
-        """
+        """生成测试数据"""
         test_data = {}
 
-        # 合并测试类型的基础数据和测试场景特定数据
+        # 合并测试类型的基础数据和场景特定数据
         base_data = test_type.get('test_data', {})
         scenario_data = scenario.get('test_data', {})
 

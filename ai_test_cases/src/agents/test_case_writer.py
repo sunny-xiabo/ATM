@@ -14,6 +14,7 @@ from typing import Dict, List, Union
 import autogen
 from dotenv import load_dotenv
 from src.utils.agent_io import AgentIO
+from src.utils.json_parser import UnifiedJSONParser
 
 load_dotenv()  # 加载环境变量
 logger = logging.getLogger(__name__)  # 获取日志记录器
@@ -35,6 +36,9 @@ class TestCaseWriterAgent:
 
         # 初始化AgentIO用于保存和加载测试用例
         self.agent_io = AgentIO()
+
+        # 初始化统一的JSON解析器
+        self.json_parser = UnifiedJSONParser()
 
         # 设置并发工作线程数
         self.concurrent_workers = max(1, concurrent_workers)  # 确保至少有一个线程
@@ -70,12 +74,14 @@ class TestCaseWriterAgent:
                 ]
             }
 
-            注意：
             1. 所有输出必须严格遵循上述 JSON 格式
             2. 每个数组至少包含一个有效项
             3. 所有文本必须使用双引号
             4. JSON 必须是有效的且可解析的
-            5. 每个测试用例必须包含所有必需字段
+            5. 每个测试用例必须包含所有必需字段，包括description描述
+            6. description字段应该详细描述测试用例的目的、范围和测试重点
+            7. 返回的内容必须是中文回复，不要英文回复
+            8. id等键名必须按照json里的格式返回，如"id": "TC001-修改密码为空"这种
             ''',
             llm_config={"config_list": self.config_list},
         )
@@ -87,22 +93,18 @@ class TestCaseWriterAgent:
         self._load_last_cases()
 
     def _load_last_cases(self):
-        """
-        尝试加载之前的测试用例结果
-        """
+        """加载之前保存的测试用例结果"""
         try:
             result = self.agent_io.load_result("test_case_writer")
             if result:
                 self.last_cases = result
-                logger.info("成功加载之前的测试用例结果")
+                logger.info("成功加载之前的测试用例生成结果")
         except Exception as e:
             logger.error(f"加载测试用例结果时出错: {str(e)}")
 
     def generate(self, test_strategy: Dict) -> List[Dict]:
-        """
-        根据测试策略生成测试用例,按功能点分批生成测试用例，避免一次处理过多导致超时或输出不完整
-        :param test_strategy:
-        :return:
+        """基于测试策略生成测试用例。
+        优化：按功能点分批生成测试用例，避免一次处理过多导致超时或输出不完整。
         """
         try:
             # 提取测试覆盖矩阵和优先级信息
@@ -110,36 +112,38 @@ class TestCaseWriterAgent:
             priorities = test_strategy.get('priorities', [])
             test_approach = test_strategy.get('test_approach', {})
 
-            # 没有覆盖矩阵和优先级信息，使用原方法生成测试用例
-            if not coverage_matrix or not priorities:
-                logger.info("没有覆盖矩阵和优先级信息，使用原方法生成测试用例")
+            # 如果没有覆盖矩阵，使用原来的方法生成测试用例
+            if not coverage_matrix:
+                logger.warning("未提供测试覆盖矩阵，将使用整体生成方式")
                 return self._generate_all_test_cases(test_strategy)
 
             # 按功能点分组
             feature_groups = {}
             for item in coverage_matrix:
-                feature = item.get("feature", "")
+                feature = item.get('feature', '')
                 if not feature:
                     continue
+
                 if feature not in feature_groups:
                     feature_groups[feature] = []
                 feature_groups[feature].append(item)
 
-            logger.info(f"将按{len(feature_groups)}个功能点分配生成测试用例")
+            logger.info(f"将按{len(feature_groups)}个功能点分批生成测试用例")
 
-            # 根据并发工作线程决定使用并发还是顺序处理
+            # 根据并发工作线程数决定使用并发还是顺序处理
             if self.concurrent_workers > 1:
-                logger.info(f"使用并发处理，设置并发工作线程数为: {self.concurrent_workers}")
+                logger.info(f"使用并发方式处理功能点，并发数: {self.concurrent_workers}")
                 all_test_cases = self._generate_feature_test_cases_concurrent(
                     feature_groups=feature_groups,
                     priorities=priorities,
-                    test_approach=test_approach)
+                    test_approach=test_approach
+                )
             else:
                 logger.info("使用顺序方式处理功能点")
-                #  分批生成测试用例
+                # 分批生成测试用例
                 all_test_cases = []
                 for i, (feature, items) in enumerate(feature_groups.items()):
-                    logger.info(f"开始为功能点'{feature}'生成测试用例，第{i + 1}/{len(feature_groups)}个")
+                    logger.info(f"开始为功能点 '{feature}' 生成测试用例 ({i + 1}/{len(feature_groups)})")
 
                     # 为单个功能点生成测试用例
                     feature_test_cases = self._generate_feature_test_cases(
@@ -151,7 +155,7 @@ class TestCaseWriterAgent:
 
                     if feature_test_cases:
                         all_test_cases.extend(feature_test_cases)
-                        logger.info(f"为功能点'{feature}'生成了 {len(feature_test_cases)} 个测试用例")
+                        logger.info(f"功能点 '{feature}' 生成了 {len(feature_test_cases)} 个测试用例")
 
                         # 保存中间结果，防止因超时丢失数据
                         temp_result = {
@@ -160,38 +164,37 @@ class TestCaseWriterAgent:
                             "generation_status": "in_progress",
                             "feature_progress": f"{i + 1}/{len(feature_groups)}"
                         }
-
                         try:
                             self.agent_io.save_result(f"test_case_writer_feature_{i + 1}", temp_result)
-                            logger.info(f"已保存功能点：'{feature}'的测试用例生成结果")
+                            logger.info(f"已保存功能点 '{feature}' 的测试用例生成结果")
                         except Exception as e:
                             logger.error(f"保存功能点 '{feature}' 的测试用例生成结果时出错: {str(e)}")
                     else:
-                        logger.warning(f"功能点'{feature}'未能生成有效的测试用例失败")
+                        logger.warning(f"功能点 '{feature}' 未能生成有效的测试用例")
 
-                # 如果没有生成任何测试用例，尝试使用整体生成方式
-                if not all_test_cases:
-                    logger.warning("按功能点分批生成未产生有效测试用例，尝试使用整体生成方式")
-                    return self._generate_all_test_cases(test_strategy)
+            # 如果没有生成任何测试用例，尝试使用整体生成方式
+            if not all_test_cases:
+                logger.warning("按功能点分批生成未产生有效测试用例，尝试使用整体生成方式")
+                return self._generate_all_test_cases(test_strategy)
 
-                # 验证测试用例是否与测试覆盖矩阵对应
-                self._validate_coverage(all_test_cases, coverage_matrix)
+            # 验证测试用例是否与测试覆盖矩阵对应
+            self._validate_coverage(all_test_cases, coverage_matrix)
 
-                # 保存测试用例到last_cases属性
-                self.last_cases = all_test_cases
-                logger.info(f"测试用例生成完成，共生成 {len(all_test_cases)} 个测试用例")
+            # 保存测试用例到last_cases属性
+            self.last_cases = all_test_cases
+            logger.info(f"测试用例生成完成，共生成 {len(all_test_cases)} 个测试用例")
 
-                # 将测试用例保存到文件
-                self.agent_io.save_result("test_case_writer", {"test_cases": all_test_cases})
+            # 将测试用例保存到文件
+            self.agent_io.save_result("test_case_writer", {"test_cases": all_test_cases})
 
-                # 合并所有功能点的测试用例文件
-                self._merge_feature_test_cases(len(feature_groups))
+            # 合并所有功能点的测试用例文件
+            self._merge_feature_test_cases(len(feature_groups))
 
-                return all_test_cases
+            return all_test_cases
 
         except Exception as e:
-            logger.error(f"生成测试用例时出错: {str(e)}")
-        raise
+            logger.error(f"测试用例生成错误: {str(e)}")
+            raise
 
     def _generate_all_test_cases(self, test_strategy: Dict) -> List[Dict]:
         """使用整体方式生成所有测试用例。"""
@@ -245,11 +248,12 @@ class TestCaseWriterAgent:
                 对每个测试用例，请提供：
                 1. 用例ID
                 2. 标题
-                3. 前置条件
-                4. 测试步骤
-                5. 预期结果
-                6. 优先级（使用上述优先级定义）
-                7. 类别（对应测试覆盖矩阵中的测试类型）
+                3. 描述（详细说明测试的目的和范围）
+                4. 前置条件
+                5. 测试步骤
+                6. 预期结果
+                7. 优先级（使用上述优先级定义）
+                8. 类别（对应测试覆盖矩阵中的测试类型）
 
                 请直接提供测试用例，无需等待进一步确认。""",
                 max_turns=1  # 限制对话轮次为1，避免死循环
@@ -276,7 +280,7 @@ class TestCaseWriterAgent:
                 测试用例必须使用以下优先级：
                 {priority_info}
 
-                每个测试用例必须包含：ID、标题、前置条件、测试步骤、预期结果、优先级和类别。
+                每个测试用例必须包含：ID、标题、描述、前置条件、测试步骤、预期结果、优先级和类别。
                 优先级必须使用P0、P1等格式，类别必须与测试覆盖矩阵中的测试类型对应。
 
                 重要：
@@ -366,81 +370,36 @@ class TestCaseWriterAgent:
                 logger.error(f"消息不是字符串类型: {type(message)}")
                 return []
 
-            # 尝试解析JSON格式的响应
-            import json
-            import re
+            # 使用统一的JSON解析器
+            json_data = self.json_parser.parse(message, "test_case_generation")
 
-            # 方法1: 尝试提取JSON代码块
-            json_match = re.search(r'``json\s*(.*?)\s*```', message, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                try:
-                    json_data = json.loads(json_str)
-                    if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                        logger.info(f"成功从JSON代码块中解析出 {len(json_data['test_cases'])} 个测试用例")
+            if json_data and 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
+                logger.info(f"成功从JSON响应中解析出 {len(json_data['test_cases'])} 个测试用例")
 
-                        # 验证和规范化测试用例
-                        validated_test_cases = []
-                        for test_case in json_data['test_cases']:
-                            # 确保所有必需字段都存在
-                            if self._validate_test_case(test_case):
-                                # 规范化优先级格式（确保是P0、P1等格式）
-                                if 'priority' in test_case and not test_case['priority'].startswith('P'):
-                                    test_case['priority'] = f"P{test_case['priority']}" if test_case[
-                                        'priority'].isdigit() else test_case['priority']
+                # 验证和规范化测试用例
+                validated_test_cases = []
+                for test_case in json_data['test_cases']:
+                    # 确保所有必需字段都存在
+                    if self._validate_test_case(test_case):
+                        # 规范化优先级格式（确保是P0、P1等格式）
+                        if 'priority' in test_case and not test_case['priority'].startswith('P'):
+                            test_case['priority'] = f"P{test_case['priority']}" if test_case['priority'].isdigit() else \
+                                test_case['priority']
 
-                                # 确保类别字段存在且有意义
-                                if 'category' not in test_case or not test_case['category']:
-                                    test_case['category'] = '功能测试'
+                        # 确保类别字段存在且有意义
+                        if 'category' not in test_case or not test_case['category']:
+                            test_case['category'] = '功能测试'
 
-                                validated_test_cases.append(test_case)
-                            else:
-                                logger.warning(f"测试用例验证失败，跳过: {test_case.get('id', 'unknown')}")
+                        validated_test_cases.append(test_case)
+                    else:
+                        logger.warning(f"测试用例验证失败，跳过: {test_case.get('id', 'unknown')}")
 
-                        # 如果验证后的测试用例为空，记录警告并返回空列表
-                        if not validated_test_cases:
-                            logger.warning("验证后的测试用例为空，需要重新生成")
-                            return []
+                # 如果验证后的测试用例为空，记录警告并返回空列表
+                if not validated_test_cases:
+                    logger.warning("验证后的测试用例为空，需要重新生成")
+                    return []
 
-                        return validated_test_cases
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON代码块解析错误: {str(e)}")
-                    # 继续尝试其他解析方法
-
-            # 方法2: 尝试直接解析整个消息内容为JSON
-            try:
-                # 直接尝试解析整个消息
-                json_data = json.loads(message)
-                if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                    logger.info(f"成功从完整消息中解析出 {len(json_data['test_cases'])} 个测试用例")
-
-                    # 验证和规范化测试用例
-                    validated_test_cases = []
-                    for test_case in json_data['test_cases']:
-                        # 确保所有必需字段都存在
-                        if self._validate_test_case(test_case):
-                            # 规范化优先级格式（确保是P0、P1等格式）
-                            if 'priority' in test_case and not test_case['priority'].startswith('P'):
-                                test_case['priority'] = f"P{test_case['priority']}" if test_case[
-                                    'priority'].isdigit() else test_case['priority']
-
-                            # 确保类别字段存在且有意义
-                            if 'category' not in test_case or not test_case['category']:
-                                test_case['category'] = '功能测试'
-
-                            validated_test_cases.append(test_case)
-                        else:
-                            logger.warning(f"测试用例验证失败，跳过: {test_case.get('id', 'unknown')}")
-
-                    # 如果验证后的测试用例为空，记录警告并返回空列表
-                    if not validated_test_cases:
-                        logger.warning("验证后的测试用例为空，需要重新生成")
-                        return []
-
-                    return validated_test_cases
-            except json.JSONDecodeError as e:
-                logger.error(f"完整消息JSON解析错误: {str(e)}")
-                # 继续尝试其他解析方法
+                return validated_test_cases
 
             # 如果没有找到JSON格式的响应，尝试使用原来的解析方法
             sections = message.split('\n')
@@ -465,6 +424,7 @@ class TestCaseWriterAgent:
                     current_test_case = {
                         'id': '',
                         'title': '',
+                        'description': '',
                         'preconditions': [],
                         'steps': [],
                         'expected_results': [],
@@ -481,6 +441,7 @@ class TestCaseWriterAgent:
                         current_test_case = {
                             'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
                             'title': '',
+                            'description': '',
                             'preconditions': [],
                             'steps': [],
                             'expected_results': [],
@@ -491,12 +452,29 @@ class TestCaseWriterAgent:
                     title_parts = line.split(':', 1) if line else ['', '']
                     current_test_case['title'] = title_parts[1].strip() if len(title_parts) > 1 else ''
                     current_field = 'title'
+                elif line.lower().startswith('description:'):
+                    # 如果遇到描述字段但当前测试用例为空，先创建一个新的测试用例
+                    if not current_test_case:
+                        current_test_case = {
+                            'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
+                            'title': '',
+                            'description': '',
+                            'preconditions': [],
+                            'steps': [],
+                            'expected_results': [],
+                            'priority': '',
+                            'category': ''
+                        }
+                    current_test_case['description'] = line.split(':', 1)[1].strip() if len(
+                        line.split(':', 1)) > 1 else ''
+                    current_field = 'description'
                 elif line.lower().startswith('preconditions:'):
                     # 如果遇到前置条件字段但当前测试用例为空，先创建一个新的测试用例
                     if not current_test_case:
                         current_test_case = {
                             'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
                             'title': '',
+                            'description': '',
                             'preconditions': [],
                             'steps': [],
                             'expected_results': [],
@@ -510,6 +488,7 @@ class TestCaseWriterAgent:
                         current_test_case = {
                             'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
                             'title': '',
+                            'description': '',
                             'preconditions': [],
                             'steps': [],
                             'expected_results': [],
@@ -523,6 +502,7 @@ class TestCaseWriterAgent:
                         current_test_case = {
                             'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
                             'title': '',
+                            'description': '',
                             'preconditions': [],
                             'steps': [],
                             'expected_results': [],
@@ -536,6 +516,7 @@ class TestCaseWriterAgent:
                         current_test_case = {
                             'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
                             'title': '',
+                            'description': '',
                             'preconditions': [],
                             'steps': [],
                             'expected_results': [],
@@ -550,6 +531,7 @@ class TestCaseWriterAgent:
                         current_test_case = {
                             'id': f'TC{len(test_cases) + 1:03d}',  # 自动生成ID
                             'title': '',
+                            'description': '',
                             'preconditions': [],
                             'steps': [],
                             'expected_results': [],
@@ -566,6 +548,15 @@ class TestCaseWriterAgent:
                             current_test_case[current_field].append(line.strip()[1:].strip())
                         elif line.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '0.')):
                             current_test_case[current_field].append(line.strip().split('.', 1)[1].strip())
+                    elif current_field in ['description', 'title']:
+                        # 对于字符串字段，如果当前行不是新的字段标识，则追加到现有内容
+                        if not any(line.lower().startswith(field + ':') for field in
+                                   ['id:', 'title:', 'description:', 'preconditions:', 'steps:', 'expected results:',
+                                    'priority:', 'category:']):
+                            if current_test_case[current_field]:  # 如果已有内容，添加换行
+                                current_test_case[current_field] += ' ' + line.strip()
+                            else:  # 如果没有内容，直接设置
+                                current_test_case[current_field] = line.strip()
 
             # 如果存在最后一个测试用例则添加
             if current_test_case and self._validate_test_case(current_test_case):
@@ -590,7 +581,7 @@ class TestCaseWriterAgent:
         try:
             # 检查是否所有必需字段都存在
             required_fields = [
-                "id", "title", "preconditions", "steps",
+                "id", "title", "description", "preconditions", "steps",
                 "expected_results", "priority", "category"
             ]
             if not all(field in test_case for field in required_fields):
@@ -601,6 +592,11 @@ class TestCaseWriterAgent:
             # 验证字段内容
             if not test_case["id"] or not test_case["title"]:
                 logger.warning(f"测试用例ID或标题为空: {test_case.get('id', 'unknown')}")
+                return False
+
+            # 验证描述字段
+            if not test_case["description"]:
+                logger.warning(f"测试用例描述为空: {test_case.get('id', 'unknown')}")
                 return False
 
             # 确保步骤和预期结果不为空
@@ -729,11 +725,12 @@ class TestCaseWriterAgent:
             对每个测试用例，请提供：
             1. 用例ID（格式：TC-{feature}-XXX，例如TC-文件上传-001）
             2. 标题（必须包含功能点名称）
-            3. 前置条件
-            4. 测试步骤
-            5. 预期结果
-            6. 优先级（使用上述优先级定义）
-            7. 类别（对应测试覆盖矩阵中的测试类型）
+            3. 描述（详细说明测试的目的和范围）
+            4. 前置条件
+            5. 测试步骤
+            6. 预期结果
+            7. 优先级（使用上述优先级定义）
+            8. 类别（对应测试覆盖矩阵中的测试类型）
 
             请直接提供测试用例，无需等待进一步确认。"""
 
@@ -765,14 +762,14 @@ class TestCaseWriterAgent:
                 测试用例必须使用以下优先级：
                 {priority_info}
 
-                每个测试用例必须包含：ID、标题、前置条件、测试步骤、预期结果、优先级和类别。
+                每个测试用例必须包含：ID、标题、描述、前置条件、测试步骤、预期结果、优先级和类别。
                 ID格式必须为TC{feature}XXX，标题必须包含功能点名称 '{feature}'。
                 优先级必须使用P0、P1等格式，类别必须与测试类型对应。
 
                 请以JSON格式返回测试用例，确保格式正确。"""
 
                 # 重新尝试生成测试用例，使用更明确的JSON格式要求
-                retry_prompt += "\n\n请务必以以下格式返回JSON：\n``json\n{\n  \"test_cases\": [\n    {\n      \"id\": \"TC车牌识别001\",\n      \"title\": \"车牌识别功能验证\",\n      \"preconditions\": [\"前置条件1\", \"前置条件2\"],\n      \"steps\": [\"步骤1\", \"步骤2\"],\n      \"expected_results\": [\"预期结果1\", \"预期结果2\"],\n      \"priority\": \"P0\",\n      \"category\": \"功能测试\"\n    }\n  ]\n}\n```\n\n请确保JSON格式正确，所有字段都存在且有效。"
+                retry_prompt += "\n\n请务必以以下格式返回JSON：\n``json\n{\n  \"test_cases\": [\n    {\n      \"id\": \"TC车牌识别001\",\n      \"title\": \"车牌识别功能验证\",\n      \"description\": \"验证车牌识别功能的准确性和稳定性\",\n      \"preconditions\": [\"前置条件1\", \"前置条件2\"],\n      \"steps\": [\"步骤1\", \"步骤2\"],\n      \"expected_results\": [\"预期结果1\", \"预期结果2\"],\n      \"priority\": \"P0\",\n      \"category\": \"功能测试\"\n    }\n  ]\n}\n```\n\n请确保JSON格式正确，所有字段都存在且有效。"
 
                 user_proxy.initiate_chat(
                     self.agent,
@@ -1152,7 +1149,7 @@ class TestCaseWriterAgent:
         import concurrent.futures
 
         # 定义批处理函数
-        def process_batch(batch_index, batch_cases):
+        def process_improvement_batch(batch_index, batch_cases):
             logger.info(f"开始处理第{batch_index + 1}批测试用例，共{len(batch_cases)}个")
 
             # 使用大模型改进当前批次的测试用例
@@ -1186,7 +1183,8 @@ class TestCaseWriterAgent:
         batch_results: List[List[Dict] | None] = [None] * len(batches)  # 预先分配结果列表
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.concurrent_workers) as executor:
             # 提交所有批次任务
-            future_to_batch = {executor.submit(process_batch, i, batch): i for i, batch in enumerate(batches)}
+            future_to_batch = {executor.submit(process_improvement_batch, i, batch): i for i, batch in
+                               enumerate(batches)}
 
             # 收集结果但不立即合并
             for future in concurrent.futures.as_completed(future_to_batch):
@@ -1330,85 +1328,16 @@ class TestCaseWriterAgent:
                 logger.error(f"响应不是字符串类型: {type(response)}")
                 return []
 
-            # 尝试提取JSON部分
-            import json
-            import re
+            # 使用统一的JSON解析器
+            json_data = self.json_parser.parse(response, "test_case_improvement")
 
-            # 尝试提取JSON部分
-            json_match = re.search(r'``json\s*(.*?)\s*```', response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                try:
-                    json_data = json.loads(json_str)
-                    if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                        return json_data['test_cases']
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON解析错误: {str(e)}")
-                    # 尝试修复不完整的JSON
-                    fixed_json = self._fix_incomplete_json(json_str)
-                    if fixed_json:
-                        try:
-                            json_data = json.loads(fixed_json)
-                            if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                                return json_data['test_cases']
-                        except json.JSONDecodeError:
-                            pass
-
-            # 如果没有找到JSON代码块，尝试直接解析整个响应
-            try:
-                json_data = json.loads(response)
+            if json_data:
                 if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
+                    logger.info(f"成功从JSON响应中解析出 {len(json_data['test_cases'])} 个改进后的测试用例")
                     return json_data['test_cases']
                 elif isinstance(json_data, list):
-                    # 如果直接返回了测试用例列表
+                    logger.info(f"成功从JSON响应中解析出 {len(json_data)} 个改进后的测试用例")
                     return json_data
-            except json.JSONDecodeError:
-                # 尝试修复不完整的JSON
-                fixed_json = self._fix_incomplete_json(response)
-                if fixed_json:
-                    try:
-                        json_data = json.loads(fixed_json)
-                        if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                            return json_data['test_cases']
-                        elif isinstance(json_data, list):
-                            return json_data
-                    except json.JSONDecodeError:
-                        pass
-
-                # 如果修复失败，尝试在整个文本中查找JSON对象
-                json_obj_match = re.search(r'\{[\s\S]*\}', response)
-                if json_obj_match:
-                    json_str = json_obj_match.group(0)
-                    try:
-                        json_data = json.loads(json_str)
-                        if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                            return json_data['test_cases']
-                        elif isinstance(json_data, list):
-                            return json_data
-                    except json.JSONDecodeError:
-                        # 尝试修复不完整的JSON
-                        fixed_json = self._fix_incomplete_json(json_str)
-                        if fixed_json:
-                            try:
-                                json_data = json.loads(fixed_json)
-                                if 'test_cases' in json_data and isinstance(json_data['test_cases'], list):
-                                    return json_data['test_cases']
-                                elif isinstance(json_data, list):
-                                    return json_data
-                            except json.JSONDecodeError:
-                                pass
-
-            # 尝试提取测试用例数组部分
-            test_cases_match = re.search(r'"test_cases"\s*:\s*\[(.*?)\]', response, re.DOTALL)
-            if test_cases_match:
-                # 尝试修复和解析测试用例数组
-                test_cases_str = '[' + test_cases_match.group(1) + ']'
-                fixed_json = self._fix_incomplete_json(test_cases_str)
-                if fixed_json:
-                    try:
-                        return json.loads(fixed_json)
-                    except json.JSONDecodeError:
-                        pass
 
             logger.warning("无法从响应中提取有效的测试用例")
             return []
@@ -1416,51 +1345,3 @@ class TestCaseWriterAgent:
         except Exception as e:
             logger.error(f"解析大模型响应错误: {str(e)}")
             return []
-
-    def _fix_incomplete_json(self, json_str: str) -> str:
-        """尝试修复不完整的JSON字符串。"""
-        try:
-            # 检查是否是测试用例数组
-            if json_str.strip().startswith('[') and not json_str.strip().endswith(']'):
-                # 找到最后一个完整的测试用例对象
-                last_complete_obj_end = json_str.rfind('}')
-                if last_complete_obj_end > 0:
-                    # 截取到最后一个完整对象
-                    fixed_json = json_str[:last_complete_obj_end + 1] + ']'
-                    return fixed_json
-
-            # 检查是否是包含test_cases的对象
-            if '"test_cases"' in json_str and json_str.strip().startswith('{'):
-                if not json_str.strip().endswith('}'):
-                    # 找到test_cases数组的开始
-                    test_cases_start = json_str.find('"test_cases"')
-                    if test_cases_start > 0:
-                        # 找到数组开始
-                        array_start = json_str.find('[', test_cases_start)
-                        if array_start > 0:
-                            # 找到最后一个完整的测试用例对象
-                            last_complete_obj_end = json_str.rfind('}')
-                            if last_complete_obj_end > array_start:
-                                # 构建修复后的JSON
-                                fixed_json = json_str[:array_start + 1]  # 包含 "test_cases": [
-                                fixed_json += json_str[array_start + 1:last_complete_obj_end + 1]  # 添加数组内容到最后一个完整对象
-                                fixed_json += ']}'  # 关闭数组和对象
-                                return fixed_json
-
-            # 如果是单个测试用例对象被截断
-            if json_str.strip().startswith('{') and not json_str.strip().endswith('}'):
-                # 尝试找到最后一个完整的键值对
-                last_complete_pair = max(
-                    json_str.rfind('",'),
-                    json_str.rfind('"],'),
-                    json_str.rfind('"},')
-                )
-                if last_complete_pair > 0:
-                    # 截取到最后一个完整键值对
-                    fixed_json = json_str[:last_complete_pair + 2] + '}'
-                    return fixed_json
-
-            return ""
-        except Exception as e:
-            logger.error(f"修复不完整JSON错误: {str(e)}")
-            return ""
